@@ -22,7 +22,7 @@ const db      = args.db   || 'mysql';
 const kase    = args.case || 'upper';
 const outFile = args.out;
 
-if (!['mysql', 'psql'].includes(db))    { log('Hata: --db=mysql|psql');    process.exit(1); }
+if (!['mysql', 'psql', 'mssql'].includes(db))    { log('Hata: --db=mysql|psql|mssql');    process.exit(1); }
 if (!['upper', 'title'].includes(kase)) { log('Hata: --case=upper|title'); process.exit(1); }
 
 // toLocaleLowerCase('tr-TR') kullanmak şart, yoksa İ/I/ı/i dönüşümleri bozuluyor
@@ -39,8 +39,13 @@ function applyCase(str) {
     return kase === 'title' ? titleTR(str) : str;
 }
 
-const Q = db === 'mysql' ? '`' : '"';
-const q = n => Q + n + Q;
+const Q = db === 'mysql' ? '`' : db === 'mssql' ? '[' : '"';
+const q = n => {
+    if (db === 'mssql' && n.includes('.')) {
+        return n.split('.').map(p => Q + p + (db === 'mssql' ? ']' : Q)).join('.');
+    }
+    return Q + n + (db === 'mssql' ? ']' : Q);
+};
 
 function val(v) {
     if (v == null) return 'NULL';
@@ -49,10 +54,11 @@ function val(v) {
 }
 
 function createTable(name, cols, pk) {
-    w(`DROP TABLE IF EXISTS ${q(name)};`);
-    w(`CREATE TABLE ${q(name)} (`);
-    const defs = cols.map(([c, mType, pType]) =>
-        `  ${q(c)} ${db === 'mysql' ? mType : pType}`
+    const fullName = db === 'mssql' ? `geo.${name}` : name;
+    w(`DROP TABLE IF EXISTS ${q(fullName)};`);
+    w(`CREATE TABLE ${q(fullName)} (`);
+    const defs = cols.map(([c, mType, pType, mssqlType]) =>
+        `  ${q(c)} ${db === 'mysql' ? mType : db === 'psql' ? pType : mssqlType}`
     );
     defs.push(`  PRIMARY KEY (${pk.map(q).join(', ')})`);
     w(defs.join(',\n'));
@@ -64,7 +70,8 @@ function createTable(name, cols, pk) {
 }
 
 function ins(table, cols, vals) {
-    w(`INSERT INTO ${q(table)} (${cols.map(q).join(', ')}) VALUES (${vals.join(', ')});`);
+    const fullTable = db === 'mssql' ? `geo.${table}` : table;
+    w(`INSERT INTO ${q(fullTable)} (${cols.map(q).join(', ')}) VALUES (${vals.join(', ')});`);
 }
 
 function readJsonl(file) {
@@ -119,62 +126,65 @@ if (db === 'mysql') {
     w('SET NAMES utf8mb4;');
     w('SET FOREIGN_KEY_CHECKS = 0;');
     w();
+} else if (db === 'mssql') {
+    w('CREATE SCHEMA geo;');
+    w();
 }
 
-// iller
+// provinces
 
-createTable('iller', [
-    ['id',    'int(11) NOT NULL',          'integer NOT NULL'],
-    ['name',  'varchar(255) DEFAULT NULL', 'text'],
-    ['plaka', 'int(11) DEFAULT NULL',      'integer'],
+createTable('provinces', [
+    ['id',    'int(11) NOT NULL',          'integer NOT NULL', 'int NOT NULL'],
+    ['name',  'varchar(255) DEFAULT NULL', 'text', 'nvarchar(255)'],
+    ['plate_code', 'int(11) DEFAULT NULL',      'integer', 'int'],
 ], ['id']);
 
 w('BEGIN;');
 for (const il of iller) {
-    ins('iller', ['id', 'name', 'plaka'], [
+    ins('provinces', ['id', 'name', 'plate_code'], [
         il.kimlikNo, val(applyCase(il.adi)), il.kimlikNo,
     ]);
 }
 w('COMMIT;');
 w();
 
-// ilceler
+// districts
 
-createTable('ilceler', [
-    ['id',       'int(11) NOT NULL',          'integer NOT NULL'],
-    ['name',     'varchar(255) DEFAULT NULL', 'text'],
-    ['kimlikNo', 'int(11) NOT NULL',          'integer NOT NULL'],
-    ['il_id',    'int(11) NOT NULL',          'integer NOT NULL'],
-], ['id', 'kimlikNo', 'il_id']);
+createTable('districts', [
+    ['id',       'int(11) NOT NULL',          'integer NOT NULL', 'int NOT NULL'],
+    ['name',     'varchar(255) DEFAULT NULL', 'text', 'nvarchar(255)'],
+    ['identity_number', 'int(11) NOT NULL',          'integer NOT NULL', 'int NOT NULL'],
+    ['province_id',    'int(11) NOT NULL',          'integer NOT NULL', 'int NOT NULL'],
+], ['id', 'identity_number', 'province_id']);
 
 w('BEGIN;');
 for (const r of ilceler) {
-    ins('ilceler', ['id', 'name', 'kimlikNo', 'il_id'], [
+    ins('districts', ['id', 'name', 'identity_number', 'province_id'], [
         r.kimlikNo, val(applyCase(r.adi)), r.kimlikNo, r.il_id,
     ]);
 }
 w('COMMIT;');
 w();
 
-// mahalleler
+// neighborhoods
 
-createTable('mahalleler', [
-    ['id',          'int(11) NOT NULL',          'integer NOT NULL'],
-    ['name',        'varchar(255) DEFAULT NULL', 'text'],
-    ['bilesenName', 'varchar(255) DEFAULT NULL', 'text'],
-    ['kimlikNo',    'int(11) NOT NULL',          'integer NOT NULL'],
-    ['il_id',       'int(11) NOT NULL',          'integer NOT NULL'],
-    ['ilce_id',     'int(11) NOT NULL',          'integer NOT NULL'],
-], ['id', 'kimlikNo', 'il_id', 'ilce_id']);
+createTable('neighborhoods', [
+    ['id',          'int(11) NOT NULL',          'integer NOT NULL', 'int NOT NULL'],
+    ['name',        'varchar(255) DEFAULT NULL', 'text', 'nvarchar(255)'],
+    ['full_name', 'varchar(255) DEFAULT NULL', 'text', 'nvarchar(255)'],
+    ['identity_number',    'int(11) NOT NULL',          'integer NOT NULL', 'int NOT NULL'],
+    ['province_id',       'int(11) NOT NULL',          'integer NOT NULL', 'int NOT NULL'],
+    ['district_id',     'int(11) NOT NULL',          'integer NOT NULL', 'int NOT NULL'],
+], ['id', 'identity_number', 'province_id', 'district_id']);
 
-log('Mahalleler yazılıyor...');
+log('Neighborhoods writing...');
 w('BEGIN;');
 let mCount = 0;
 for (const il of iller) {
     const rows = readJsonl(path.join(DATA_DIR, `il-${il.kimlikNo}`, 'mahalleler.jsonl'))
         .sort((a, b) => a.kimlikNo - b.kimlikNo);
     for (const r of rows) {
-        ins('mahalleler', ['id', 'name', 'bilesenName', 'kimlikNo', 'il_id', 'ilce_id'], [
+        ins('neighborhoods', ['id', 'name', 'full_name', 'identity_number', 'province_id', 'district_id'], [
             r.kimlikNo, val(applyCase(r.adi)), val(applyCase(r.bilesenAdi)),
             r.kimlikNo, r.il_id, r.ilce_id,
         ]);
@@ -183,27 +193,27 @@ for (const il of iller) {
 }
 w('COMMIT;');
 w();
-log(`  ${mCount.toLocaleString('tr-TR')} mahalle yazıldı.`);
+log(`  ${mCount.toLocaleString('tr-TR')} neighborhoods written.`);
 
-// csbms (sokak/cadde/bulvar/meydan)
+// streets
 
-createTable('csbms', [
-    ['id',          'int(11) NOT NULL',          'integer NOT NULL'],
-    ['name',        'varchar(255) DEFAULT NULL', 'text'],
-    ['bilesenName', 'varchar(255) DEFAULT NULL', 'text'],
-    ['il_id',       'int(11) NOT NULL',          'integer NOT NULL'],
-    ['ilce_id',     'int(11) NOT NULL',          'integer NOT NULL'],
-    ['mahalle_id',  'int(11) NOT NULL',          'integer NOT NULL'],
-], ['id', 'il_id', 'ilce_id', 'mahalle_id']);
+createTable('streets', [
+    ['id',          'int(11) NOT NULL',          'integer NOT NULL', 'int NOT NULL'],
+    ['name',        'varchar(255) DEFAULT NULL', 'text', 'nvarchar(255)'],
+    ['full_name', 'varchar(255) DEFAULT NULL', 'text', 'nvarchar(255)'],
+    ['province_id',       'int(11) NOT NULL',          'integer NOT NULL', 'int NOT NULL'],
+    ['district_id',     'int(11) NOT NULL',          'integer NOT NULL', 'int NOT NULL'],
+    ['neighborhood_id',  'int(11) NOT NULL',          'integer NOT NULL', 'int NOT NULL'],
+], ['id', 'province_id', 'district_id', 'neighborhood_id']);
 
-log('Sokaklar yazılıyor...');
+log('Streets writing...');
 w('BEGIN;');
 let sCount = 0;
 for (const il of iller) {
     const rows = readJsonl(path.join(DATA_DIR, `il-${il.kimlikNo}`, 'sokaklar.jsonl'))
         .sort((a, b) => a.kimlikNo - b.kimlikNo);
     for (const r of rows) {
-        ins('csbms', ['id', 'name', 'bilesenName', 'il_id', 'ilce_id', 'mahalle_id'], [
+        ins('streets', ['id', 'name', 'full_name', 'province_id', 'district_id', 'neighborhood_id'], [
             r.kimlikNo, val(applyCase(r.adi)), val(applyCase(r.bilesenAdi)),
             r.il_id, r.ilce_id, r.mahalle_id,
         ]);
@@ -212,7 +222,7 @@ for (const il of iller) {
 }
 w('COMMIT;');
 w();
-log(`  ${sCount.toLocaleString('tr-TR')} sokak yazıldı.`);
+log(`  ${sCount.toLocaleString('tr-TR')} streets written.`);
 
 if (db === 'mysql') {
     w('SET FOREIGN_KEY_CHECKS = 1;');
